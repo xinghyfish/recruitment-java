@@ -86,7 +86,6 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	
         // ...
 
-		// 初始化 Bean 实例
 		Object exposedObject = bean;
 		try {
             // 属性注入
@@ -271,3 +270,80 @@ public abstract class AbstractAutoProxyCreator extends ProxyProcessorSupport
 ```
 
 因此，实例化前的后置操作可以用一个代理对象来代替实际生成的 Bean 对象。
+
+### 实例化后处理
+
+在实例化完成后，也可以通过后置处理器进行处理，Spring 中相关代码如下：
+
+```java
+public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFactory implements AutowireCapableBeanFactory {
+	/**
+	 * 对 Bean 进行属性赋值
+	 * @param beanName the name of the bean
+	 * @param mbd the bean definition for the bean
+	 * @param bw the BeanWrapper with bean instance
+	 */
+	protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
+		if (bw == null) {
+			if (mbd.hasPropertyValues()) {
+				throw new BeanCreationException(
+						mbd.getResourceDescription(), beanName, "Cannot apply property values to null instance");
+			}
+			else {
+				// 对于 null 实例跳过属性注入阶段
+				return;
+			}
+		}
+
+		// ...
+
+		// 给定任何 InstantiationAwareBeanPostProcessors 在属性赋值前修改 bean 状态的机会. 
+        // 例如，可以用于进行字段注入
+		if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+			for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+				if (!bp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
+					return;
+				}
+			}
+		}
+
+		PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
+
+		int resolvedAutowireMode = mbd.getResolvedAutowireMode();
+		if (resolvedAutowireMode == AUTOWIRE_BY_NAME || resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
+			MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
+			// 按名称注入
+			if (resolvedAutowireMode == AUTOWIRE_BY_NAME) {
+				autowireByName(beanName, mbd, bw, newPvs);
+			}
+			// 按类型注入
+			if (resolvedAutowireMode == AUTOWIRE_BY_TYPE) {
+				autowireByType(beanName, mbd, bw, newPvs);
+			}
+			pvs = newPvs;
+		}
+		if (hasInstantiationAwareBeanPostProcessors()) {
+			if (pvs == null) {
+				pvs = mbd.getPropertyValues();
+			}
+			for (InstantiationAwareBeanPostProcessor bp : getBeanPostProcessorCache().instantiationAware) {
+				PropertyValues pvsToUse = bp.postProcessProperties(pvs, bw.getWrappedInstance(), beanName);
+				if (pvsToUse == null) {
+					return;
+				}
+				pvs = pvsToUse;
+			}
+		}
+
+		boolean needsDepCheck = (mbd.getDependencyCheck() != AbstractBeanDefinition.DEPENDENCY_CHECK_NONE);
+		if (needsDepCheck) {
+			PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+			checkDependencies(beanName, mbd, filteredPds, pvs);
+		}
+
+		if (pvs != null) {
+			applyPropertyValues(beanName, mbd, bw, pvs);
+		}
+	}
+}
+```
