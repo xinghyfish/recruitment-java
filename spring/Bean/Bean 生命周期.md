@@ -1032,6 +1032,85 @@ final class PostProcessorRegistrationDelegate {
 - 如果 BeanFactory 是注册器，则按照是否实现 `PriorityOrdered`、`Ordered` 接口、普通注册起处理器的顺序进行处理，最后处理常规的后置处理器；否则直接处理常规的后置处理器。
 - 接着，按照同样的接口实现排序方案，将还没有处理过的后置处理器按顺序调用。
 
+### 为什么要将注册和普通工厂区分？
+
+上面一大堆代码介绍了不同的 `BeanFactoryPostProcessor` 的执行时机。尽管源代码在“做了什么”层面可读性很高，但是“为什么要这么做”的？或者说，分层设计的出发点是什么呢？
+
+从上面的代码可知，`BeanDefinitionRegistryPostProcessor` 是 `BeanFactoryPostProcessor` 的子接口，主要用于处理 BeanDefinition ，因此提供了更细粒度的控制和动态注册方法：
+
+`BeanFactory` 主要负责管理已经创建好的 Bean 实例，但对于 Bean 的定义管理相对较为笼统。而`BeanDefinitionRegistry` 专注于 Bean 定义的注册、查询和删除等操作，提供了更细粒度的控制。
+
+例如，可以在运行时根据特定条件动态地添加或删除 Bean 定义，而不会直接影响已经创建的 Bean 实例。这对于实现复杂的应用场景非常有用，比如插件式架构或动态配置。
+
+在一些应用中，可能需要在运行时根据外部输入或系统状态动态地注册新的 Bean。BeanDefinitionRegistry提供了registerBeanDefinition方法，可以方便地实现这个功能。
+
+从软件工程的角度，这样的设计方案就是关注点分离，使得 Spring 框架更容易扩展和定制，满足不同应用的需求。
+
+### 为什么要有优先级
+
+从代码的语义层面，`PriorityOrdered` 适用于那些必须最先执行的关键任务，`Ordered` 适用于需要一定顺序执行，但不是绝对优先的任务。两个接口的代码都很简单：
+
+```java
+// Ordered.java
+package org.springframework.core;
+
+public interface Ordered {
+    int HIGHEST_PRECEDENCE = Integer.MIN_VALUE;
+    int LOWEST_PRECEDENCE = Integer.MAX_VALUE;
+
+    int getOrder();
+}
+
+// PriorityOrdered.java
+package org.springframework.core;
+
+public interface PriorityOrdered extends Ordered {
+}
+```
+
+可以发现优先级顺序接口是顺序接口的子类，通过 `getOrder()` 获取顺序，并将 `Integer` 的最大/最小值作为边界。
+
+在 Spring 源代码中举两个实现了对应接口的例子：
+
+```java
+// ConfigurationClassPostProcessor.java
+// 用于带有 @Configuration 注解类的启动过程具备高优先级，
+// 因为任何在 @Configuration 类中的 @Bean 方法需要在其他工厂处理器执行之前
+// 注册对应的 bean definition 。
+public class ConfigurationClassPostProcessor implements BeanDefinitionRegistryPostProcessor,
+		BeanRegistrationAotProcessor, BeanFactoryInitializationAotProcessor, PriorityOrdered,
+		ResourceLoaderAware, ApplicationStartupAware, BeanClassLoaderAware, EnvironmentAware {
+
+    @Override
+	public int getOrder() {
+		return Ordered.LOWEST_PRECEDENCE;  // within PriorityOrdered
+	}
+}
+
+// InitDestroyAnnotationBeanPostProcessor.java
+// 这个类的作用是调用带有特定注解的初始化和销毁方法
+public class InitDestroyAnnotationBeanPostProcessor implements DestructionAwareBeanPostProcessor,
+		MergedBeanDefinitionPostProcessor, BeanRegistrationAotProcessor, PriorityOrdered, Serializable {
+
+    private int order = Ordered.LOWEST_PRECEDENCE;
+
+    public void setOrder(int order) {
+		this.order = order;
+	}
+
+	@Override
+	public int getOrder() {
+		return this.order;
+	}
+}
+```
+
+可以看出，如果一个 `BeanFactoryPostProcessor` 需要在其他 `BeanFactoryPostProcessor` 之前执行，即具备优先级。
+
+如果只使用 `Ordered` 接口，虽然可以实现一定程度的顺序控制，但无法明确区分出最高优先级的任务。在一些情况下，可能会导致关键任务不能及时执行，影响应用程序的性能和稳定性。
+
+如果只使用 `PriorityOrdered` 接口，可能会导致所有组件都被认为是最高优先级，难以区分不同层次的优先级需求。而且，在一些情况下，可能会过度强调优先级，导致一些不太关键的任务也被过早执行，浪费系统资源。
+
 # 4 Bean 级生命周期方法
 
 这是 Bean 直接实现的接口方法，只对当前 Bean 有效。
@@ -1040,5 +1119,40 @@ final class PostProcessorRegistrationDelegate {
 
 感知类接口的目的是为了拿到 Spring 容器中的一些资源，结合上文可以得知，感知类接口在初始化前被调用。
 
+可以分为两类：
+
+- 在代码中直接调用的：
+  - `BeanNameAware`
+  - `BeanClassLoaderAware`
+  - `BeanFactoryAware`
+- ApplicationContext 相关的感知器， 在 `postProcessBeforeInitialization()` 中被调用：
+  - `EnvironmentAware`
+  - `EmbeddedValueResolverAware`
+  - `ApplicationContextAware(ResourceLoaderAware/ApplicationEventPublisherAware/MessageSourceAware)`
+
+在上文有提及，其中第一组感知接口先于第二组感知接口执行。
+
 ## 4.2 生命周期接口
 
+`InitializingBean` 对应生命周期的初始化阶段，在上面源码的 `invokeInitMethods(beanName, wrappedBean, mbd);` 方法中调用。
+
+因为 Aware 方法都是执行在初始化方法之前，所以可以在初始化方法中使用 Aware 接口获取的资源，这也是自定义扩展 Spring 的常用方式。
+
+除了实现 InitializingBean 接口之外还能通过注解或者 xml 配置的方式指定初始化方法，至于这几种定义方式的调用顺序其实没有必要记。因为这几个方法对应的都是同一个生命周期，只是实现方式不同，我们一般只采用其中一种方式。
+
+类似地，`DisposableBean` 对应生命周期的销毁阶段，以`ConfigurableApplicationContext#close()` 方法作为入口，通过循环取所有实现了 `DisposableBean` 接口的 Bean 并调用 `destroy()` 方法
+
+```java
+
+public interface DisposableBean {
+
+	void destroy() throws Exception;
+
+}
+```
+
+# 总结
+
+到这里为止就把 Spring 中 Bean 的生命周期梳理完成，回头看还是有很多内容和展开的，用一张图片概括一下：
+
+![sd](BeanLifeCycle.png)
