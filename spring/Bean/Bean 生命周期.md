@@ -664,9 +664,7 @@ public interface BeanPostProcessor {
 }
 ```
 
-因此，我们看一下 Spring 内置的具体实现类的调用 `ApplicationContextAwareProcessor#`
-
-
+因此，我们看一下 Spring 内置的具体实现类的调用 `ApplicationContextAwareProcessor#postProcessBeforeInitialization`：
 
 ```java
 /**
@@ -979,8 +977,8 @@ final class PostProcessorRegistrationDelegate {
 			invokeBeanFactoryPostProcessors(beanFactoryPostProcessors, beanFactory);
 		}
 
-		// Do not initialize FactoryBeans here: We need to leave all regular beans
-		// uninitialized to let the bean factory post-processors apply to them!
+		// 不要在这里初始化 FactoryBean，需要保持所有常规的 Bean 非初始化
+        // 以委托工厂的后置处理器来完成
 		String[] postProcessorNames =
 				beanFactory.getBeanNamesForType(BeanFactoryPostProcessor.class, true, false);
 
@@ -1028,3 +1026,19 @@ final class PostProcessorRegistrationDelegate {
 	}
 }
 ```
+
+整个流程可以概括为
+
+- 如果 BeanFactory 是注册器，则按照是否实现 `PriorityOrdered`、`Ordered` 接口、普通注册起处理器的顺序进行处理，最后处理常规的后置处理器；否则直接处理常规的后置处理器。
+- 接着，按照同样的接口实现排序方案，将还没有处理过的后置处理器按顺序调用。
+
+# 4 Bean 级生命周期方法
+
+这是 Bean 直接实现的接口方法，只对当前 Bean 有效。
+
+## 4.1 感知类接口 Aware
+
+感知类接口的目的是为了拿到 Spring 容器中的一些资源，结合上文可以得知，感知类接口在初始化前被调用。
+
+## 4.2 生命周期接口
+
